@@ -36,7 +36,7 @@ else
 fi
 
 # Update kubeconfig
-aws eks update-kubeconfig --name multi-tier-cluster --region us-east-1
+aws eks update-kubeconfig --name multi-tier-cluster --region eu-west-1
 check_status "Updating kubeconfig"
 
 # Step 1: Create EBS Storage Class

@@ -3,15 +3,15 @@ kind: ClusterConfig
 
 metadata:
   name: multi-tier-cluster
-  region: us-east-1
+  region: eu-west-1
   version: "1.27"
 
 nodeGroups:
   - name: worker-nodes
-    instanceType: t3.large
-    desiredCapacity: 3
+    instanceType: t3.small
+    desiredCapacity: 2
     minSize: 2
-    maxSize: 4
+    maxSize: 2
     volumeSize: 50
     ssh:
       allow: false
