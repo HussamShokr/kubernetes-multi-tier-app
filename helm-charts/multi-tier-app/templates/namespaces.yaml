@@ -1,4 +1,10 @@
+{{- if not (lookup "v1" "Namespace" "" .Values.global.namespace) }}
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+{{- end }}

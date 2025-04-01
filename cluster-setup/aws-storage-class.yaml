@@ -6,6 +6,6 @@ provisioner: ebs.csi.aws.com
 volumeBindingMode: WaitForFirstConsumer
 parameters:
   type: gp3
-  encrypted: "true"
+  encrypted: 'true'
 reclaimPolicy: Retain
 allowVolumeExpansion: true
