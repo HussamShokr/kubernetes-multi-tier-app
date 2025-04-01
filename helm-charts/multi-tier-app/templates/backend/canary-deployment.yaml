@@ -1,0 +1,48 @@
+{{- if .Values.backend.canary.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.backend.name }}-canary
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.backend.name }}
+    tier: backend
+    version: canary
+spec:
+  replicas: {{ .Values.backend.canary.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.backend.name }}
+      tier: backend
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.backend.name }}
+        tier: backend
+        version: canary
+    spec:
+      containers:
+      - name: {{ .Values.backend.name }}-canary
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.canary.image.tag }}"
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        ports:
+        - containerPort: 3000
+        env:
+        - name: MONGO_URI
+          value: "mongodb://{{ .Values.database.auth.username }}:{{ .Values.database.auth.password }}@{{ .Values.database.name }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.database.service.port }}/{{ .Values.database.auth.database }}"
+        resources:
+{{ toYaml .Values.backend.resources | indent 12 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+{{- end }}
