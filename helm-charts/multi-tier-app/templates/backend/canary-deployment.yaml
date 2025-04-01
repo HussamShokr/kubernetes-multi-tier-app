@@ -1,38 +1,44 @@
-{{- if .Values.backend.canary.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Values.backend.name }}-canary
-  namespace: {{ .Values.global.namespace }}
+  name: backend-canary
+  namespace: multi-tier
   labels:
-    app: {{ .Values.backend.name }}
+    app: backend
     tier: backend
     version: canary
 spec:
-  replicas: {{ .Values.backend.canary.replicaCount }}
+  replicas: 1
   selector:
     matchLabels:
-      app: {{ .Values.backend.name }}
+      app: backend
       tier: backend
       version: canary
   template:
     metadata:
       labels:
-        app: {{ .Values.backend.name }}
+        app: backend
         tier: backend
         version: canary
     spec:
       containers:
-      - name: {{ .Values.backend.name }}-canary
-        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.canary.image.tag }}"
-        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+      - name: backend-canary
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.eu-west-1.amazonaws.com/backend:canary
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
         env:
+        - name: PORT
+          value: "3000"
         - name: MONGO_URI
-          value: "mongodb://{{ .Values.database.auth.username }}:{{ .Values.database.auth.password }}@{{ .Values.database.name }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.database.service.port }}/{{ .Values.database.auth.database }}"
+          value: "mongodb://app-user:app-password@mongodb.multi-tier.svc.cluster.local:27017/app-database"
         resources:
-{{ toYaml .Values.backend.resources | indent 12 }}
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 256Mi
         livenessProbe:
           httpGet:
             path: /health
@@ -45,4 +51,3 @@ spec:
             port: 3000
           initialDelaySeconds: 5
           periodSeconds: 10
-{{- end }}

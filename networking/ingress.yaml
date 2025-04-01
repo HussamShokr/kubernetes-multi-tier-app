@@ -8,9 +8,10 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
-    # Removed kubernetes.io/ingress.class annotation
+    # Add the certificate ARN from the create-self-signed-cert.sh script output
+    alb.ingress.kubernetes.io/certificate-arn: ${CERTIFICATE_ARN}
 spec:
-  ingressClassName: alb  # Added this line instead of using annotation
+  ingressClassName: alb
   rules:
   - http:
       paths:

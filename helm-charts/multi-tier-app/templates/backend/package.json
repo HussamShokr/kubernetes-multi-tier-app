@@ -1,0 +1,12 @@
+{
+    "name": "backend-service",
+    "version": "1.0.0",
+    "description": "Backend service for multi-tier application",
+    "main": "app.js",
+    "scripts": {
+      "start": "node app.js"
+    },
+    "dependencies": {
+      "mongodb": "^4.13.0"
+    }
+  }

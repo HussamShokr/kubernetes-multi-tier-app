@@ -70,6 +70,10 @@ check_status "IAM access entry creation"
 aws eks update-kubeconfig --name multi-tier-cluster --region eu-west-1
 check_status "Updating kubeconfig"
 
+# Step 0.2: Get AWS account ID
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+echo "AWS Account ID: $AWS_ACCOUNT_ID"
+
 # Step 1: Create Storage Class if it doesn't exist
 progress_step "1" "Creating EBS Storage Class"
 if ! resource_exists storageclass ebs-sc; then
@@ -142,11 +146,22 @@ else
 fi
 echo -e "${GREEN}✅ Success: MongoDB setup${NC}"
 
-# Step 5: Deploy Frontend components
-progress_step "5" "Deploying Frontend components"
+# Step 5: Build and push backend Docker images if needed
+progress_step "5" "Building and pushing backend Docker images"
+if [ -f "backend/build-push-images.sh" ]; then
+  chmod +x backend/build-push-images.sh
+  ./backend/build-push-images.sh
+  check_status "Backend Docker images"
+else
+  echo -e "${YELLOW}⚠️ backend/build-push-images.sh not found. Skipping image build.${NC}"
+  echo -e "${YELLOW}⚠️ Make sure your backend images are already built and pushed.${NC}"
+fi
+
 # Create temp directory if it doesn't exist
 mkdir -p temp
 
+# Step 6: Deploy Frontend components
+progress_step "6" "Deploying Frontend components"
 # Check and apply Frontend Deployment
 if ! resource_exists deployment frontend multi-tier; then
   # Create frontend deployment file directly
@@ -267,51 +282,13 @@ else
 fi
 echo -e "${GREEN}✅ Success: Frontend deployment${NC}"
 
-# Step 6: Deploy Backend components
-progress_step "6" "Deploying Backend components"
+# Step 7: Deploy Backend components
+progress_step "7" "Deploying Backend components"
 # Check and apply Backend Deployment
 if ! resource_exists deployment backend multi-tier; then
-  cat > temp/backend-deployment.yaml << 'EOF'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: backend
-  namespace: multi-tier
-  labels:
-    app: backend
-    tier: backend
-    version: stable
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: backend
-      tier: backend
-  template:
-    metadata:
-      labels:
-        app: backend
-        tier: backend
-        version: stable
-    spec:
-      containers:
-      - name: backend
-        image: node:16-alpine
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 3000
-        env:
-        - name: MONGO_URI
-          value: "mongodb://app-user:app-password@mongodb.multi-tier.svc.cluster.local:27017/app-database"
-        resources:
-          limits:
-            cpu: 1000m
-            memory: 1Gi
-          requests:
-            cpu: 200m
-            memory: 256Mi
-EOF
-
+  # Replace placeholder in template
+  sed -i "s/\${AWS_ACCOUNT_ID}/$AWS_ACCOUNT_ID/g" temp/backend-deployment.yaml 2>/dev/null || true
+  
   kubectl apply -f temp/backend-deployment.yaml
   echo "deployment/backend created"
 else
@@ -382,47 +359,8 @@ fi
 
 # Check and apply Backend Canary Deployment
 if ! resource_exists deployment backend-canary multi-tier; then
-  cat > temp/backend-canary-deployment.yaml << 'EOF'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: backend-canary
-  namespace: multi-tier
-  labels:
-    app: backend
-    tier: backend
-    version: canary
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: backend
-      tier: backend
-      version: canary
-  template:
-    metadata:
-      labels:
-        app: backend
-        tier: backend
-        version: canary
-    spec:
-      containers:
-      - name: backend-canary
-        image: node:16-alpine-canary
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 3000
-        env:
-        - name: MONGO_URI
-          value: "mongodb://app-user:app-password@mongodb.multi-tier.svc.cluster.local:27017/app-database"
-        resources:
-          limits:
-            cpu: 1000m
-            memory: 1Gi
-          requests:
-            cpu: 200m
-            memory: 256Mi
-EOF
+  # Replace placeholder in template
+  sed -i "s/\${AWS_ACCOUNT_ID}/$AWS_ACCOUNT_ID/g" temp/backend-canary-deployment.yaml 2>/dev/null || true
   
   kubectl apply -f temp/backend-canary-deployment.yaml
   echo "deployment/backend-canary created"
@@ -431,8 +369,8 @@ else
 fi
 echo -e "${GREEN}✅ Success: Backend deployment${NC}"
 
-# Step 7: Configure networking and security
-progress_step "7" "Setting up networking and security"
+# Step 8: Configure networking and security
+progress_step "8" "Setting up networking and security"
 # Check and apply Network Policies
 if ! resource_exists networkpolicy frontend-policy multi-tier; then
   kubectl apply -f networking/network-policies.yaml
@@ -441,8 +379,27 @@ else
   echo "networkpolicy.networking.k8s.io/frontend-policy already exists"
 fi
 
-# Step 8: Setup AWS Load Balancer Controller
-progress_step "8" "Setting up AWS Load Balancer Controller"
+# Step 9: Create self-signed certificate for HTTPS
+progress_step "9" "Creating self-signed certificate for HTTPS"
+# Create self-signed certificate and import to ACM
+if ! aws acm list-certificates --query "CertificateSummaryList[?DomainName=='multi-tier-app.local'].CertificateArn" --output text | grep -q "arn:aws:acm"; then
+  echo "Creating and importing self-signed certificate..."
+  chmod +x ./networking/create-self-signed-cert.sh
+  CERT_ARN=$(./networking/create-self-signed-cert.sh | grep "Certificate ARN" | awk '{print $3}')
+  
+  # Update ingress.yaml with the certificate ARN
+  if [ -n "$CERT_ARN" ]; then
+    sed -i "s/\${CERTIFICATE_ARN}/$CERT_ARN/g" networking/ingress.yaml
+    check_status "Update ingress with certificate ARN"
+  fi
+else
+  echo -e "${GREEN}Certificate for multi-tier-app.local already exists in ACM${NC}"
+  CERT_ARN=$(aws acm list-certificates --query "CertificateSummaryList[?DomainName=='multi-tier-app.local'].CertificateArn" --output text)
+  sed -i "s/\${CERTIFICATE_ARN}/$CERT_ARN/g" networking/ingress.yaml
+fi
+
+# Step 10: Setup AWS Load Balancer Controller
+progress_step "10" "Setting up AWS Load Balancer Controller"
 
 # IMPORTANT: First associate OIDC provider with the cluster
 echo "Associating OIDC provider with the cluster..."
@@ -498,17 +455,23 @@ else
   echo -e "${GREEN}AWS Load Balancer Controller already installed.${NC}"
 fi
 
-# Step 9: Apply Ingress resource
-progress_step "9" "Creating Ingress resource"
+# Step 11: Apply Ingress resource
+progress_step "11" "Creating Ingress resource"
 if ! resource_exists ingress multi-tier-ingress multi-tier; then
   kubectl apply -f networking/ingress.yaml
   check_status "Ingress resource creation"
 else
   echo -e "${GREEN}Ingress resource already exists.${NC}"
+  # Update the existing ingress with the new certificate
+  if [ -n "$CERT_ARN" ]; then
+    kubectl patch ingress multi-tier-ingress -n multi-tier --type=json \
+      -p="[{\"op\": \"replace\", \"path\": \"/metadata/annotations/alb.ingress.kubernetes.io~1certificate-arn\", \"value\": \"$CERT_ARN\"}]"
+    check_status "Update existing ingress with certificate ARN"
+  fi
 fi
 
-# Step 10: Deploy monitoring and logging
-progress_step "10" "Setting up monitoring and logging"
+# Step 12: Deploy monitoring and logging
+progress_step "12" "Setting up monitoring and logging"
 # Add Helm repos
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
@@ -680,8 +643,8 @@ else
   echo -e "${GREEN}Fluentd already installed.${NC}"
 fi
 
-# Step 11: Configure backup system
-progress_step "11" "Setting up backup system"
+# Step 13: Configure backup system
+progress_step "13" "Setting up backup system"
 if ! resource_exists pvc mongodb-backup-pvc multi-tier; then
   kubectl apply -f stateful/backup-pvc.yaml
   check_status "Backup PVC creation"
@@ -700,16 +663,17 @@ fi
 rm -rf temp
 
 # Get access information
-progress_step "12" "Getting access information"
+progress_step "14" "Getting access information"
 echo -e "\n${YELLOW}Access Information:${NC}"
 
 # Get ALB endpoints
 echo "Checking for Ingress/ALB endpoints..."
-sleep 5  # Give time for the ALB to be provisioned
+sleep 10  # Give time for the ALB to be provisioned
 INGRESS_ALB=$(kubectl get ingress multi-tier-ingress -n multi-tier -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
 if [ -n "$INGRESS_ALB" ]; then
-  echo -e "Application URL: ${GREEN}http://$INGRESS_ALB${NC}"
-  echo -e "API URL: ${GREEN}http://$INGRESS_ALB/api${NC}"
+  echo -e "Application URL: ${GREEN}https://$INGRESS_ALB${NC}"
+  echo -e "API URL: ${GREEN}https://$INGRESS_ALB/api${NC}"
+  echo -e "Add to your hosts file: $INGRESS_ALB multi-tier-app.local"
 else
   echo -e "${YELLOW}⚠️ Ingress ALB not yet available. It may take a few minutes to provision.${NC}"
   echo -e "Check later with: kubectl get ingress multi-tier-ingress -n multi-tier"
