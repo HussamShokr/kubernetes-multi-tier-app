@@ -93,11 +93,11 @@ read -p "Delete EKS cluster? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
   echo -e "${YELLOW}Deleting EKS cluster 'multi-tier-cluster'... This may take 15-20 minutes.${NC}"
-  eksctl delete cluster --name multi-tier-cluster --region us-east-1
+  eksctl delete cluster --name multi-tier-cluster --region eu-west-1
   check_status "EKS cluster deletion"
 else
   echo -e "${YELLOW}Cluster deletion skipped. You can delete it later with:${NC}"
-  echo -e "eksctl delete cluster --name multi-tier-cluster --region us-east-1"
+  echo -e "eksctl delete cluster --name multi-tier-cluster --region eu-west-1"
 fi
 
 # Step 9: Clean up IAM policy
