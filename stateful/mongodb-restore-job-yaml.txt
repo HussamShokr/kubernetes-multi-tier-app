@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongodb-restore
+  namespace: multi-tier
+spec:
+  template:
+    spec:
+      containers:
+      - name: mongodb-restore
+        image: mongo:5.0
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Available backups:"
+          ls -la /backup/
+          
+          # Use the specified backup or the latest one
+          if [ -n "$BACKUP_NAME" ]; then
+            RESTORE_FROM="$BACKUP_NAME"
+          else
+            RESTORE_FROM=$(ls -t /backup/ | head -n1)
+          fi
+          
+          echo "Restoring from backup: $RESTORE_FROM"
+          
+          # Restore using mongorestore
+          mongorestore --host=mongodb.multi-tier.svc.cluster.local:27017 \
+                       --username=root \
+                       --password=$MONGODB_ROOT_PASSWORD \
+                       --authenticationDatabase=admin \
+                       --nsFrom="app-database.*" \
+                       --nsTo="app-database.*" \
+                       --drop \
+                       /backup/$RESTORE_FROM/app-database
+          
+          echo "Restore completed"
+        env:
+        - name: MONGODB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: root-password
+        - name: BACKUP_NAME
+          value: "" # This can be set when running the job
+        volumeMounts:
+        - name: backup-storage
+          mountPath: /backup
+      restartPolicy: Never
+      volumes:
+      - name: backup-storage
+        persistentVolumeClaim:
+          claimName: mongodb-backup-pvc
+  backoffLimit: 3

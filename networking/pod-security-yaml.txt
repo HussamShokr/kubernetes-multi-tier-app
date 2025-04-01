@@ -1,0 +1,9 @@
+# For newer Kubernetes versions with Pod Security Standards
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multi-tier
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

@@ -1,0 +1,70 @@
+# Elasticsearch configuration
+elasticsearch:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  minimumMasterNodes: 1
+  volumeClaimTemplate:
+    accessModes: [ "ReadWriteOnce" ]
+    storageClassName: ebs-sc
+    resources:
+      requests:
+        storage: 10Gi
+
+# Kibana configuration
+kibana:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  service:
+    type: LoadBalancer
+
+# Fluentd configuration
+fluentd:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "200Mi"
+    limits:
+      cpu: "300m"
+      memory: "500Mi"
+  configMaps:
+    useDefaults:
+      containersInputConf: true
+      systemInputConf: true
+      outputConf: false
+  extraConfigMaps:
+    - name: fluentd-custom-config
+      mountPath: /fluentd/etc/custom
+      data:
+        output.conf: |
+          <match kubernetes.**>
+            @type elasticsearch
+            host "#{ENV['ELASTICSEARCH_HOST']}"
+            port "#{ENV['ELASTICSEARCH_PORT']}"
+            logstash_format true
+            logstash_prefix k8s-${record["kubernetes"]["namespace_name"]}
+            <buffer>
+              @type file
+              path /var/log/fluentd-buffers/kubernetes.system.buffer
+              flush_mode interval
+              retry_type exponential_backoff
+              flush_thread_count 2
+              flush_interval 5s
+              retry_forever false
+              retry_max_interval 30
+              chunk_limit_size 2M
+              queue_limit_length 8
+              overflow_action block
+            </buffer>
+          </match>

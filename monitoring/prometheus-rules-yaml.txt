@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alert-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+data:
+  alert-rules.yaml: |
+    groups:
+    - name: kubernetes-resources
+      rules:
+      - alert: HighCpuUsage
+        expr: sum(rate(container_cpu_usage_seconds_total{pod=~".*"}[5m])) by (pod) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High CPU usage detected
+          description: "Pod {{ $labels.pod }} has high CPU usage (> 80%) for more than 5 minutes."
+          
+      - alert: HighMemoryUsage
+        expr: sum(container_memory_usage_bytes{pod=~".*"}) by (pod) / sum(container_spec_memory_limit_bytes{pod=~".*"}) by (pod) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High memory usage detected
+          description: "Pod {{ $labels.pod }} has high memory usage (> 80%) for more than 5 minutes."
+          
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Pod is crash looping
+          description: "Pod {{ $labels.pod }} is crash looping for more than 15 minutes."
+
+    - name: mongodb-alerts
+      rules:
+      - alert: MongoDBDown
+        expr: absent(up{job="mongodb"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: MongoDB is down
+          description: "MongoDB has been down for more than 5 minutes."
+
+    - name: application-alerts
+      rules:
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High error rate detected
+          description: "More than 5% of requests are resulting in 5xx errors over the last 5 minutes."

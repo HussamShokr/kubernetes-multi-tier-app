@@ -1,0 +1,85 @@
+# Global settings
+global:
+  environment: production
+  namespace: multi-tier
+
+# Frontend settings
+frontend:
+  name: frontend
+  replicaCount: 2
+  image:
+    repository: nginx
+    tag: 1.21.0
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+
+# Backend settings
+backend:
+  name: backend
+  replicaCount: 2
+  image:
+    repository: node
+    tag: 16-alpine
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  canary:
+    enabled: true
+    replicaCount: 1
+    image:
+      tag: 16-alpine-canary
+
+# Database settings
+database:
+  name: mongodb
+  replicaCount: 1
+  image:
+    repository: mongo
+    tag: 5.0
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 27017
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  persistence:
+    enabled: true
+    storageClass: "ebs-sc" # AWS EBS storage class
+    size: 10Gi
+  auth:
+    rootPassword: change-me-in-production
+    username: app-user
+    password: app-password
+    database: app-database

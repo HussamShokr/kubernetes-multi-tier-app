@@ -1,0 +1,59 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: frontend-monitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+      tier: frontend
+  namespaceSelector:
+    matchNames:
+      - multi-tier
+  endpoints:
+  - port: http
+    interval: 15s
+    path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-monitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: backend
+      tier: backend
+  namespaceSelector:
+    matchNames:
+      - multi-tier
+  endpoints:
+  - port: http
+    interval: 15s
+    path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mongodb-monitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: mongodb
+      tier: database
+  namespaceSelector:
+    matchNames:
+      - multi-tier
+  endpoints:
+  - port: mongodb
+    interval: 30s
+    path: /metrics

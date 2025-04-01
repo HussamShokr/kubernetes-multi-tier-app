@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Values.database.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.database.name }}
+    tier: database
+spec:
+  serviceName: {{ .Values.database.name }}
+  replicas: {{ .Values.database.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.database.name }}
+      tier: database
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.database.name }}
+        tier: database
+    spec:
+      containers:
+      - name: {{ .Values.database.name }}
+        image: "{{ .Values.database.image.repository }}:{{ .Values.database.image.tag }}"
+        imagePullPolicy: {{ .Values.database.image.pullPolicy }}
+        env:
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          value: {{ .Values.database.auth.rootPassword }}
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: root
+        - name: MONGO_INITDB_DATABASE
+          value: {{ .Values.database.auth.database }}
+        ports:
+        - containerPort: 27017
+          name: mongodb
+        volumeMounts:
+        - name: data
+          mountPath: /data/db
+        - name: mongodb-config
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+{{ toYaml .Values.database.resources | indent 12 }}
+        livenessProbe:
+          exec:
+            command:
+            - mongo
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - mongo
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: mongodb-config
+        configMap:
+          name: mongodb-init
+  {{- if .Values.database.persistence.enabled }}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      {{- if .Values.database.persistence.storageClass }}
+      storageClassName: {{ .Values.database.persistence.storageClass }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.database.persistence.size }}
+  {{- end }}

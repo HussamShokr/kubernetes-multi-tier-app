@@ -1,0 +1,26 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: multi-tier-cluster
+  region: us-east-1
+  version: "1.27"
+
+nodeGroups:
+  - name: worker-nodes
+    instanceType: t3.large
+    desiredCapacity: 3
+    minSize: 2
+    maxSize: 4
+    volumeSize: 50
+    ssh:
+      allow: false
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        ebs: true
+        albIngress: true
+
+addons:
+  - name: aws-ebs-csi-driver
+    version: latest
