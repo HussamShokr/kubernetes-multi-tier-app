@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script to clean up all deployed resources on AWS EKS
+# Script to clean up all deployed resources on AWS EKS with existence checks
 
 # Set colors for better readability
 GREEN='\033[0;32m'
@@ -24,6 +24,21 @@ check_status() {
   fi
 }
 
+# Function to check if a Kubernetes resource exists
+resource_exists() {
+  local resource_type=$1
+  local resource_name=$2
+  local namespace=$3
+  
+  if [ -z "$namespace" ]; then
+    kubectl get $resource_type $resource_name &>/dev/null
+  else
+    kubectl get $resource_type $resource_name -n $namespace &>/dev/null
+  fi
+  
+  return $?
+}
+
 # Ask for confirmation
 read -p "This will remove all resources deployed by the multi-tier application on AWS EKS. Are you sure? (y/n) " -n 1 -r
 echo
@@ -34,62 +49,194 @@ fi
 
 # Step 1: Remove Ingress resources
 progress_step "1" "Removing Ingress resources"
-echo "This will trigger deletion of AWS ALB..."
-kubectl delete ingress -n multi-tier multi-tier-ingress 2>/dev/null || true
-check_status "Ingress removal"
-# Wait for ALB to be deleted
-echo "Waiting for AWS ALB to be deleted..."
-sleep 30
+if resource_exists ingress multi-tier-ingress multi-tier; then
+  echo "Removing ingress multi-tier-ingress..."
+  kubectl delete ingress multi-tier-ingress -n multi-tier
+  echo "Waiting for AWS ALB to be deleted..."
+  sleep 30
+  check_status "Ingress removal"
+else
+  echo "Ingress resource not found, skipping."
+fi
 
-# Step 2: Remove the application namespace
-progress_step "2" "Removing application namespace"
-echo "This will delete all resources in the multi-tier namespace..."
-kubectl delete namespace multi-tier 2>/dev/null || true
-check_status "Application namespace removal"
+# Step 2: Remove application components from multi-tier namespace
+progress_step "2" "Removing application components"
+echo "Removing deployments, services, and HPAs..."
 
-# Step 3: Remove monitoring namespace
-progress_step "3" "Removing monitoring namespace"
-echo "This will delete all monitoring resources including Prometheus, Grafana, and EFK stack..."
-kubectl delete namespace monitoring 2>/dev/null || true
-check_status "Monitoring namespace removal"
+# Frontend components
+if resource_exists deployment frontend multi-tier; then
+  kubectl delete deployment frontend -n multi-tier
+  echo "Deleted deployment/frontend"
+fi
 
-# Step 4: Remove helm releases
-progress_step "4" "Removing Helm releases"
-echo "Removing Helm releases..."
-helm uninstall multi-tier-app 2>/dev/null || true
-helm uninstall prometheus -n monitoring 2>/dev/null || true
-helm uninstall efk -n monitoring 2>/dev/null || true
-check_status "Helm releases removal"
+if resource_exists service frontend multi-tier; then
+  kubectl delete service frontend -n multi-tier
+  echo "Deleted service/frontend"
+fi
 
-# Step 5: Clean up AWS Load Balancer Controller
-progress_step "5" "Cleaning up AWS Load Balancer Controller"
-echo "Removing AWS Load Balancer Controller..."
-helm uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
-check_status "AWS Load Balancer Controller removal"
+if resource_exists hpa frontend multi-tier; then
+  kubectl delete hpa frontend -n multi-tier
+  echo "Deleted horizontalpodautoscaler/frontend"
+fi
 
-# Step 6: Clean up IAM service account
-progress_step "6" "Cleaning up IAM service account"
-echo "Removing IAM service account..."
-eksctl delete iamserviceaccount \
-  --cluster=multi-tier-cluster \
-  --namespace=kube-system \
-  --name=aws-load-balancer-controller 2>/dev/null || true
-check_status "IAM service account removal"
+# Backend components
+if resource_exists deployment backend multi-tier; then
+  kubectl delete deployment backend -n multi-tier
+  echo "Deleted deployment/backend"
+fi
 
-# Step 7: Clean up persistent volumes
-progress_step "7" "Cleaning up persistent volumes"
-echo "Removing any orphaned PVs..."
-for pv in $(kubectl get pv -o name 2>/dev/null); do
-  echo "Deleting $pv..."
-  kubectl delete $pv --force --grace-period=0 2>/dev/null || true
+if resource_exists deployment backend-canary multi-tier; then
+  kubectl delete deployment backend-canary -n multi-tier
+  echo "Deleted deployment/backend-canary"
+fi
+
+if resource_exists service backend multi-tier; then
+  kubectl delete service backend -n multi-tier
+  echo "Deleted service/backend"
+fi
+
+if resource_exists hpa backend multi-tier; then
+  kubectl delete hpa backend -n multi-tier
+  echo "Deleted horizontalpodautoscaler/backend"
+fi
+
+# Step 3: Remove MongoDB resources
+progress_step "3" "Removing MongoDB resources"
+
+# CronJob and Backups
+if resource_exists cronjob mongodb-backup multi-tier; then
+  kubectl delete cronjob mongodb-backup -n multi-tier
+  echo "Deleted cronjob/mongodb-backup"
+fi
+
+# Give time for any running jobs to complete their deletion
+sleep 5
+
+# StatefulSet and Service
+if resource_exists statefulset mongodb multi-tier; then
+  kubectl delete statefulset mongodb -n multi-tier --cascade=foreground
+  echo "Deleted statefulset/mongodb"
+fi
+
+if resource_exists service mongodb multi-tier; then
+  kubectl delete service mongodb -n multi-tier
+  echo "Deleted service/mongodb"
+fi
+
+# ConfigMap and Secret
+if resource_exists configmap mongodb-init multi-tier; then
+  kubectl delete configmap mongodb-init -n multi-tier
+  echo "Deleted configmap/mongodb-init"
+fi
+
+if resource_exists secret mongodb-secret multi-tier; then
+  kubectl delete secret mongodb-secret -n multi-tier
+  echo "Deleted secret/mongodb-secret"
+fi
+
+# Step 4: Remove PVCs and PVs
+progress_step "4" "Removing PVCs and PVs"
+echo "Removing PVCs..."
+if resource_exists pvc mongodb-backup-pvc multi-tier; then
+  kubectl delete pvc mongodb-backup-pvc -n multi-tier
+  echo "Deleted persistentvolumeclaim/mongodb-backup-pvc"
+fi
+
+# Also check for data PVCs from StatefulSets
+if resource_exists pvc data-mongodb-0 multi-tier; then
+  kubectl delete pvc data-mongodb-0 -n multi-tier
+  echo "Deleted persistentvolumeclaim/data-mongodb-0"
+fi
+
+# Wait for PVs to be released
+echo "Waiting for PVs to be released..."
+sleep 15
+
+# Step 5: Remove Network Policies
+progress_step "5" "Removing Network Policies"
+for policy in frontend-policy backend-policy database-policy; do
+  if resource_exists networkpolicy $policy multi-tier; then
+    kubectl delete networkpolicy $policy -n multi-tier
+    echo "Deleted networkpolicy/$policy"
+  fi
 done
-check_status "PV cleanup"
 
-# Step 8: Ask if user wants to delete the EKS cluster
-progress_step "8" "EKS cluster cleanup"
+# Step 6: Remove Monitoring Resources
+progress_step "6" "Removing Monitoring Resources"
+echo "Removing Prometheus, Grafana, and EFK stack..."
+
+# Check if Prometheus Helm release exists
+if helm list -n monitoring | grep prometheus &>/dev/null; then
+  helm uninstall prometheus -n monitoring
+  echo "Uninstalled Helm release: prometheus"
+fi
+
+# Check if EFK Helm release exists
+if helm list -n monitoring | grep efk &>/dev/null; then
+  helm uninstall efk -n monitoring
+  echo "Uninstalled Helm release: efk"
+fi
+
+# Remove custom resources
+if resource_exists configmap prometheus-alert-rules monitoring; then
+  kubectl delete configmap prometheus-alert-rules -n monitoring
+  echo "Deleted configmap/prometheus-alert-rules"
+fi
+
+for sm in frontend-monitor backend-monitor mongodb-monitor; do
+  if resource_exists servicemonitor $sm monitoring; then
+    kubectl delete servicemonitor $sm -n monitoring
+    echo "Deleted servicemonitor/$sm"
+  fi
+done
+
+if resource_exists configmap fluentd-config monitoring; then
+  kubectl delete configmap fluentd-config -n monitoring
+  echo "Deleted configmap/fluentd-config"
+fi
+
+# Step 7: Remove AWS Load Balancer Controller
+progress_step "7" "Removing AWS Load Balancer Controller"
+if kubectl get deployment -n kube-system aws-load-balancer-controller &>/dev/null; then
+  echo "Uninstalling AWS Load Balancer Controller..."
+  helm uninstall aws-load-balancer-controller -n kube-system
+  check_status "AWS Load Balancer Controller removal"
+fi
+
+# Step 8: Remove IAM Service Account
+progress_step "8" "Removing IAM Service Account"
+if eksctl get iamserviceaccount --cluster=multi-tier-cluster --namespace=kube-system --name=aws-load-balancer-controller &>/dev/null; then
+  echo "Removing IAM service account..."
+  eksctl delete iamserviceaccount \
+    --cluster=multi-tier-cluster \
+    --namespace=kube-system \
+    --name=aws-load-balancer-controller
+  check_status "IAM service account removal"
+fi
+
+# Step 9: Remove Storage Class
+progress_step "9" "Removing Storage Class"
+if resource_exists storageclass ebs-sc; then
+  echo "Removing EBS Storage Class..."
+  kubectl delete storageclass ebs-sc
+  check_status "Storage class removal"
+fi
+
+# Step 10: Remove Namespaces
+progress_step "10" "Removing Namespaces"
+for ns in multi-tier monitoring; do
+  if resource_exists namespace $ns; then
+    echo "Removing namespace $ns..."
+    kubectl delete namespace $ns --wait=false
+    echo "Namespace $ns deletion initiated (may take some time to complete)"
+  fi
+done
+
+# Step 11: Ask about cluster deletion
+progress_step "11" "EKS cluster cleanup"
 echo -e "${YELLOW}Do you want to delete the EKS cluster as well? This will remove all compute nodes and the control plane.${NC}"
 echo -e "${RED}WARNING: This is irreversible and will delete ALL resources in the cluster!${NC}"
-read -p "Delete EKS cluster? (y/n) " -n 1 -r
+read -p "Delete EKS cluster 'multi-tier-cluster'? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
   echo -e "${YELLOW}Deleting EKS cluster 'multi-tier-cluster'... This may take 15-20 minutes.${NC}"
@@ -100,8 +247,8 @@ else
   echo -e "eksctl delete cluster --name multi-tier-cluster --region eu-west-1"
 fi
 
-# Step 9: Clean up IAM policy
-progress_step "9" "Cleaning up IAM policy"
+# Step 12: Clean up IAM policy (optional)
+progress_step "12" "Cleaning up IAM policy"
 echo "Do you want to remove the IAM policy for the AWS Load Balancer Controller?"
 read -p "Remove IAM policy? (y/n) " -n 1 -r
 echo
