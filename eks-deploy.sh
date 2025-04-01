@@ -50,6 +50,22 @@ else
   echo -e "${GREEN}EKS cluster already exists.${NC}"
 fi
 
+# Step 0.1: Create IAM access entry for EKS cluster
+progress_step "0.1" "Creating IAM access entry for EKS cluster"
+
+# Get current IAM user ARN
+CURRENT_USER_ARN=$(aws sts get-caller-identity --query "Arn" --output text)
+echo "Creating access entry for current IAM user: $CURRENT_USER_ARN"
+
+# Create access entry for the user with admin privileges
+eksctl create accessentry \
+  --cluster multi-tier-cluster \
+  --region eu-west-1 \
+  --principal-arn $CURRENT_USER_ARN \
+  --access-policy arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --type STANDARD 2>/dev/null || echo "Access entry may already exist"
+check_status "IAM access entry creation"
+
 # Update kubeconfig
 aws eks update-kubeconfig --name multi-tier-cluster --region eu-west-1
 check_status "Updating kubeconfig"
@@ -128,19 +144,59 @@ echo -e "${GREEN}✅ Success: MongoDB setup${NC}"
 
 # Step 5: Deploy Frontend components
 progress_step "5" "Deploying Frontend components"
+# Create temp directory if it doesn't exist
+mkdir -p temp
+
 # Check and apply Frontend Deployment
 if ! resource_exists deployment frontend multi-tier; then
-  # We need to template the Helm files since they contain variables
-  mkdir -p temp
-  envsubst < helm-charts/multi-tier-app/templates/frontend/deployment.yaml | \
-    sed 's/{{ .Values.frontend.name }}/frontend/g' | \
-    sed 's/{{ .Values.global.namespace }}/multi-tier/g' | \
-    sed 's/{{ .Values.frontend.replicaCount }}/2/g' | \
-    sed 's/{{ .Values.frontend.image.repository }}/nginx/g' | \
-    sed 's/{{ .Values.frontend.image.tag }}/1.21.0/g' | \
-    sed 's/{{ .Values.frontend.image.pullPolicy }}/IfNotPresent/g' | \
-    sed 's/{{ toYaml .Values.frontend.resources | indent 12 }}/          limits:\n            cpu: 500m\n            memory: 512Mi\n          requests:\n            cpu: 100m\n            memory: 128Mi/g' \
-    > temp/frontend-deployment.yaml
+  # Create frontend deployment file directly
+  cat > temp/frontend-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: multi-tier
+  labels:
+    app: frontend
+    tier: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: nginx:1.21.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+EOF
   
   kubectl apply -f temp/frontend-deployment.yaml
   echo "deployment/frontend created"
@@ -150,12 +206,26 @@ fi
 
 # Check and apply Frontend Service
 if ! resource_exists service frontend multi-tier; then
-  envsubst < helm-charts/multi-tier-app/templates/frontend/service.yaml | \
-    sed 's/{{ .Values.frontend.name }}/frontend/g' | \
-    sed 's/{{ .Values.global.namespace }}/multi-tier/g' | \
-    sed 's/{{ .Values.frontend.service.type }}/ClusterIP/g' | \
-    sed 's/{{ .Values.frontend.service.port }}/80/g' \
-    > temp/frontend-service.yaml
+  cat > temp/frontend-service.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: multi-tier
+  labels:
+    app: frontend
+    tier: frontend
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  selector:
+    app: frontend
+    tier: frontend
+EOF
   
   kubectl apply -f temp/frontend-service.yaml
   echo "service/frontend created"
@@ -165,15 +235,30 @@ fi
 
 # Check and apply Frontend HPA
 if ! resource_exists hpa frontend multi-tier; then
-  envsubst < helm-charts/multi-tier-app/templates/frontend/hpa.yaml | \
-    sed 's/{{- if .Values.frontend.autoscaling.enabled }}//' | \
-    sed 's/{{- end }}//' | \
-    sed 's/{{ .Values.frontend.name }}/frontend/g' | \
-    sed 's/{{ .Values.global.namespace }}/multi-tier/g' | \
-    sed 's/{{ .Values.frontend.autoscaling.minReplicas }}/2/g' | \
-    sed 's/{{ .Values.frontend.autoscaling.maxReplicas }}/10/g' | \
-    sed 's/{{ .Values.frontend.autoscaling.targetCPUUtilizationPercentage }}/80/g' \
-    > temp/frontend-hpa.yaml
+  cat > temp/frontend-hpa.yaml << 'EOF'
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend
+  namespace: multi-tier
+  labels:
+    app: frontend
+    tier: frontend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+EOF
   
   kubectl apply -f temp/frontend-hpa.yaml
   echo "horizontalpodautoscaler.autoscaling/frontend created"
@@ -184,8 +269,167 @@ echo -e "${GREEN}✅ Success: Frontend deployment${NC}"
 
 # Step 6: Deploy Backend components
 progress_step "6" "Deploying Backend components"
-# Similar checks and processing for backend components
-# ...
+# Check and apply Backend Deployment
+if ! resource_exists deployment backend multi-tier; then
+  cat > temp/backend-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: multi-tier
+  labels:
+    app: backend
+    tier: backend
+    version: stable
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: backend
+        version: stable
+    spec:
+      containers:
+      - name: backend
+        image: node:16-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+        env:
+        - name: MONGO_URI
+          value: "mongodb://app-user:app-password@mongodb.multi-tier.svc.cluster.local:27017/app-database"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 256Mi
+EOF
+
+  kubectl apply -f temp/backend-deployment.yaml
+  echo "deployment/backend created"
+else
+  echo "deployment/backend already exists"
+fi
+
+# Check and apply Backend Service
+if ! resource_exists service backend multi-tier; then
+  cat > temp/backend-service.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: multi-tier
+  labels:
+    app: backend
+    tier: backend
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3000
+    targetPort: 3000
+    protocol: TCP
+    name: http
+  selector:
+    app: backend
+    tier: backend
+EOF
+  
+  kubectl apply -f temp/backend-service.yaml
+  echo "service/backend created"
+else
+  echo "service/backend already exists"
+fi
+
+# Check and apply Backend HPA
+if ! resource_exists hpa backend multi-tier; then
+  cat > temp/backend-hpa.yaml << 'EOF'
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+  namespace: multi-tier
+  labels:
+    app: backend
+    tier: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+EOF
+  
+  kubectl apply -f temp/backend-hpa.yaml
+  echo "horizontalpodautoscaler.autoscaling/backend created"
+else
+  echo "horizontalpodautoscaler.autoscaling/backend already exists"
+fi
+
+# Check and apply Backend Canary Deployment
+if ! resource_exists deployment backend-canary multi-tier; then
+  cat > temp/backend-canary-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-canary
+  namespace: multi-tier
+  labels:
+    app: backend
+    tier: backend
+    version: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+      tier: backend
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: backend
+        version: canary
+    spec:
+      containers:
+      - name: backend-canary
+        image: node:16-alpine-canary
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+        env:
+        - name: MONGO_URI
+          value: "mongodb://app-user:app-password@mongodb.multi-tier.svc.cluster.local:27017/app-database"
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 256Mi
+EOF
+  
+  kubectl apply -f temp/backend-canary-deployment.yaml
+  echo "deployment/backend-canary created"
+else
+  echo "deployment/backend-canary already exists"
+fi
+echo -e "${GREEN}✅ Success: Backend deployment${NC}"
 
 # Step 7: Configure networking and security
 progress_step "7" "Setting up networking and security"
@@ -199,31 +443,42 @@ fi
 
 # Step 8: Setup AWS Load Balancer Controller
 progress_step "8" "Setting up AWS Load Balancer Controller"
-# Check if service account exists
-if ! resource_exists serviceaccount aws-load-balancer-controller kube-system; then
-  # Create IAM policy if it doesn't exist
-  POLICY_EXISTS=$(aws iam list-policies --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy'].Arn" --output text)
-  if [ -z "$POLICY_EXISTS" ]; then
-    echo "Creating IAM policy for ALB Controller..."
-    curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
-    aws iam create-policy \
-        --policy-name AWSLoadBalancerControllerIAMPolicy \
-        --policy-document file://iam-policy.json
-  else
-    echo "IAM policy already exists"
-  fi
 
-  echo "Creating service account for ALB Controller..."
-  eksctl create iamserviceaccount \
-    --cluster=multi-tier-cluster \
-    --namespace=kube-system \
-    --name=aws-load-balancer-controller \
-    --attach-policy-arn=arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy \
-    --override-existing-serviceaccounts \
-    --approve
+# IMPORTANT: First associate OIDC provider with the cluster
+echo "Associating OIDC provider with the cluster..."
+eksctl utils associate-iam-oidc-provider \
+  --region=eu-west-1 \
+  --cluster=multi-tier-cluster \
+  --approve 2>/dev/null || echo "OIDC provider may already be associated"
+check_status "OIDC provider association"
+
+# Create IAM Policy for ALB Controller
+POLICY_EXISTS=$(aws iam list-policies --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy'].Arn" --output text)
+if [ -z "$POLICY_EXISTS" ]; then
+  echo "Creating IAM policy for ALB Controller..."
+  curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+  aws iam create-policy \
+      --policy-name AWSLoadBalancerControllerIAMPolicy \
+      --policy-document file://iam-policy.json
+else
+  echo "IAM policy already exists"
 fi
 
-# Check if ALB controller is deployed
+# Create IAM Service Account
+echo "Creating service account for ALB Controller..."
+eksctl create iamserviceaccount \
+  --cluster=multi-tier-cluster \
+  --namespace=kube-system \
+  --name=aws-load-balancer-controller \
+  --attach-policy-arn=$(aws iam list-policies --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy'].Arn" --output text) \
+  --override-existing-serviceaccounts \
+  --approve
+
+# Wait for service account to propagate
+echo "Waiting for service account to propagate..."
+sleep 10
+
+# Check if ALB controller is already deployed
 if ! kubectl get deployment -n kube-system aws-load-balancer-controller &>/dev/null; then
   echo "Installing AWS Load Balancer Controller..."
   helm repo add eks https://aws.github.io/eks-charts
@@ -234,6 +489,10 @@ if ! kubectl get deployment -n kube-system aws-load-balancer-controller &>/dev/n
     --set clusterName=multi-tier-cluster \
     --set serviceAccount.create=false \
     --set serviceAccount.name=aws-load-balancer-controller
+  
+  # Wait for controller to be ready
+  echo "Waiting for AWS Load Balancer Controller to be ready..."
+  kubectl wait --for=condition=available --timeout=120s deployment/aws-load-balancer-controller -n kube-system
   check_status "AWS Load Balancer Controller installation"
 else
   echo -e "${GREEN}AWS Load Balancer Controller already installed.${NC}"
@@ -283,21 +542,142 @@ else
   echo -e "${GREEN}Service monitors already exist.${NC}"
 fi
 
-# Check if EFK stack is installed
-if ! helm list -n monitoring | grep efk &>/dev/null; then
-  echo "Installing EFK stack for logging..."
-  helm install efk elastic/elastic-stack -f monitoring/efk-values.yaml --namespace monitoring
-  check_status "EFK stack installation"
+# Install Elasticsearch
+if ! helm list -n monitoring | grep elasticsearch &>/dev/null; then
+  echo "Installing Elasticsearch..."
+  helm install elasticsearch elastic/elasticsearch \
+    --namespace monitoring \
+    --set replicas=1 \
+    --set minimumMasterNodes=1 \
+    --set resources.requests.cpu=250m \
+    --set resources.requests.memory=512Mi \
+    --set resources.limits.cpu=1000m \
+    --set resources.limits.memory=2Gi \
+    --set persistence.enabled=true \
+    --set persistence.size=10Gi
+  check_status "Elasticsearch installation"
 else
-  echo -e "${GREEN}EFK stack already installed.${NC}"
+  echo -e "${GREEN}Elasticsearch already installed.${NC}"
 fi
 
-# Check if Fluentd ConfigMap exists
-if ! resource_exists configmap fluentd-config monitoring; then
-  kubectl apply -f monitoring/fluentd-configmap.yaml
-  check_status "Fluentd configuration"
+# Install Kibana
+if ! helm list -n monitoring | grep kibana &>/dev/null; then
+  echo "Installing Kibana..."
+  helm install kibana elastic/kibana \
+    --namespace monitoring \
+    --set service.type=LoadBalancer
+  check_status "Kibana installation"
 else
-  echo -e "${GREEN}Fluentd configuration already exists.${NC}"
+  echo -e "${GREEN}Kibana already installed.${NC}"
+fi
+
+# Install Fluentd using Kubernetes manifests
+if ! resource_exists daemonset fluentd monitoring; then
+  echo "Installing Fluentd..."
+  kubectl apply -f monitoring/fluentd-configmap.yaml
+  
+  # Create a Fluentd DaemonSet
+  cat > temp/fluentd-daemonset.yaml << 'EOF'
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: monitoring
+  labels:
+    app: fluentd
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+  template:
+    metadata:
+      labels:
+        app: fluentd
+    spec:
+      serviceAccount: fluentd
+      serviceAccountName: fluentd
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      containers:
+      - name: fluentd
+        image: fluent/fluentd-kubernetes-daemonset:v1.14-debian-elasticsearch7-1
+        env:
+          - name: FLUENT_ELASTICSEARCH_HOST
+            value: "elasticsearch-master"
+          - name: FLUENT_ELASTICSEARCH_PORT
+            value: "9200"
+          - name: FLUENTD_SYSTEMD_CONF
+            value: disable
+        resources:
+          limits:
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: config-volume
+          mountPath: /fluentd/etc/conf.d
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: config-volume
+        configMap:
+          name: fluentd-config
+EOF
+
+  # Create service account for Fluentd
+  cat > temp/fluentd-rbac.yaml << 'EOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluentd
+subjects:
+- kind: ServiceAccount
+  name: fluentd
+  namespace: monitoring
+EOF
+
+  kubectl apply -f temp/fluentd-rbac.yaml
+  kubectl apply -f temp/fluentd-daemonset.yaml
+  check_status "Fluentd installation"
+else
+  echo -e "${GREEN}Fluentd already installed.${NC}"
 fi
 
 # Step 11: Configure backup system
@@ -338,7 +718,7 @@ fi
 # Get monitoring URLs
 PROMETHEUS_URL=$(kubectl get svc prometheus-kube-prometheus-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
 GRAFANA_URL=$(kubectl get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
-KIBANA_URL=$(kubectl get svc efk-kibana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+KIBANA_URL=$(kubectl get svc kibana-kibana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
 
 [ -n "$PROMETHEUS_URL" ] && echo -e "Prometheus URL: ${GREEN}http://$PROMETHEUS_URL${NC}" || echo -e "${YELLOW}⚠️ Prometheus LoadBalancer not yet available.${NC}"
 [ -n "$GRAFANA_URL" ] && echo -e "Grafana URL: ${GREEN}http://$GRAFANA_URL${NC}\nGrafana credentials: ${GREEN}admin / admin123${NC}" || echo -e "${YELLOW}⚠️ Grafana LoadBalancer not yet available.${NC}"

@@ -4,14 +4,13 @@ metadata:
   name: multi-tier-ingress
   namespace: multi-tier
   annotations:
-    kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
-    # Replace with your ACM certificate ARN
-    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT_ID:certificate/CERTIFICATE_ID
+    # Removed kubernetes.io/ingress.class annotation
 spec:
+  ingressClassName: alb  # Added this line instead of using annotation
   rules:
   - http:
       paths:

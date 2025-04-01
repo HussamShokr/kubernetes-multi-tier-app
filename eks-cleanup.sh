@@ -232,8 +232,18 @@ for ns in multi-tier monitoring; do
   fi
 done
 
-# Step 11: Ask about cluster deletion
-progress_step "11" "EKS cluster cleanup"
+# Step 11: Remove IAM Access Entry
+progress_step "11" "Removing IAM Access Entry"
+CURRENT_USER_ARN=$(aws sts get-caller-identity --query "Arn" --output text)
+echo "Removing access entry for IAM user: $CURRENT_USER_ARN"
+eksctl delete accessentry \
+  --cluster multi-tier-cluster \
+  --region eu-west-1 \
+  --principal-arn $CURRENT_USER_ARN \
+  --type STANDARD 2>/dev/null || echo "Access entry may already be deleted"
+
+# Step 12: Ask about cluster deletion
+progress_step "12" "EKS cluster cleanup"
 echo -e "${YELLOW}Do you want to delete the EKS cluster as well? This will remove all compute nodes and the control plane.${NC}"
 echo -e "${RED}WARNING: This is irreversible and will delete ALL resources in the cluster!${NC}"
 read -p "Delete EKS cluster 'multi-tier-cluster'? (y/n) " -n 1 -r
@@ -247,8 +257,8 @@ else
   echo -e "eksctl delete cluster --name multi-tier-cluster --region eu-west-1"
 fi
 
-# Step 12: Clean up IAM policy (optional)
-progress_step "12" "Cleaning up IAM policy"
+# Step 13: Clean up IAM policy (optional)
+progress_step "13" "Cleaning up IAM policy"
 echo "Do you want to remove the IAM policy for the AWS Load Balancer Controller?"
 read -p "Remove IAM policy? (y/n) " -n 1 -r
 echo

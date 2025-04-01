@@ -8,10 +8,10 @@ metadata:
 
 nodeGroups:
   - name: worker-nodes
-    instanceType: t3.small
-    desiredCapacity: 2
+    instanceType: t3.large
+    desiredCapacity: 3
     minSize: 2
-    maxSize: 2
+    maxSize: 4
     volumeSize: 50
     ssh:
       allow: false
