@@ -67,7 +67,7 @@ kubernetes-multi-tier-app/
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/kubernetes-multi-tier-app.git
+git clone https://github.com/HussamShokr/kubernetes-multi-tier-app.git
 cd kubernetes-multi-tier-app
 ```
 
